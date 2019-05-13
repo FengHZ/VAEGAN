@@ -46,13 +46,13 @@ class Encoder(nn.Module):
             elif 'norm' in name and 'bias' in name:
                 param.data.fill_(0)
 
-    def forward(self, input):
-        features = self.features(input)
-        mu = self.z_mean_map(features)
-        log_sigma = self.z_mean_map(features)
+    def forward(self, x):
+        x = self.features(x)
+        mu = self.z_mean_map(x)
+        log_sigma = self.z_mean_map(x)
         sigma = torch.exp(log_sigma)
         std_z = torch.randn(mu.size())
         if mu.is_cuda:
             std_z = std_z.cuda()
-        z_sample = mu+std_z*sigma
-        return features, mu, log_sigma, sigma,z_sample
+        z_sample = mu + std_z * sigma
+        return mu, log_sigma, sigma, z_sample

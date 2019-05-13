@@ -43,4 +43,4 @@ class Discriminator(nn.Module):
     def forward(self, input):
         features = self.features(input)
         classification = self.classifier(features)
-        return features, classification
+        return classification, features
