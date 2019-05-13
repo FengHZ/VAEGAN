@@ -11,7 +11,7 @@ class ReconstructionCriterion(nn.Module):
     def forward(self, original, reconstruct):
         batch_size = original.size(0)
         reconstruct_loss = F.mse_loss(reconstruct, original, reduction="sum")
-        reconstruct_loss = reconstruct_loss / (self.x_sigma ** 2 * batch_size)
+        reconstruct_loss = reconstruct_loss / (self.sigma ** 2 * batch_size)
         return reconstruct_loss
 
 
