@@ -26,7 +26,7 @@ def arg_as_list(s):
     return v
 
 
-parser = argparse.ArgumentParser(description='Pytorch Training DCGAN for CelebA Dataset')
+parser = argparse.ArgumentParser(description='Pytorch Training VAEGAN for CelebA Dataset')
 parser.add_argument('-bp', '--base_path', default="/data/fhz")
 parser.add_argument('-j', '--workers', default=64, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
@@ -140,7 +140,7 @@ def main():
             raise FileNotFoundError("Checkpoint Resume File {} Not Found".format(args.resume))
     else:
         if os.path.exists(writer_log_dir):
-            flag = input("DCGAN train_time:{} will be removed, input yes to continue:".format(
+            flag = input("VAEGAN train_time:{} will be removed, input yes to continue:".format(
                 args.train_time))
             if flag == "yes":
                 shutil.rmtree(writer_log_dir, ignore_errors=True)
@@ -210,14 +210,16 @@ def train(train_dloader, valid_dloader, encoder, decoder, discriminator, enc_opt
         dis_optimizer.zero_grad()
         # discriminate real image
         real_label = torch.full((batch_size,), args.real_label).cuda()
-        output, *_ = discriminator(real_image).view(-1)
+        output, *_ = discriminator(real_image)
+        output = output.view(-1)
         dis_x = output.mean().item()
         dis_loss_real = cls_criterion(output, real_label)
         dis_loss_real.backward()
         # discriminate fake image from inference
         fake_inf = decoder(z_sample)
         fake_inf_label = torch.full((batch_size,), args.fake_label).cuda()
-        output, *_ = discriminator(fake_inf.detach()).view(-1)
+        output, *_ = discriminator(fake_inf.detach())
+        output = output.view(-1)
         dis_gz_inf = output.mean().item()
         dis_loss_fake_inf = 0.5 * cls_criterion(output, fake_inf_label)
         dis_loss_fake_inf.backward()
@@ -225,7 +227,8 @@ def train(train_dloader, valid_dloader, encoder, decoder, discriminator, enc_opt
         noise = torch.randn(batch_size, args.latent_dim, 1, 1).cuda()
         fake_gen = decoder(noise)
         fake_gen_label = torch.full((batch_size,), args.fake_label).cuda()
-        output, *_ = discriminator(fake_gen.detach()).view(-1)
+        output, *_ = discriminator(fake_gen.detach())
+        output = output.view(-1)
         dis_gz_gen = output.mean().item()
         dis_loss_fake_gen = 0.5 * cls_criterion(output, fake_gen_label)
         dis_loss_fake_gen.backward()
@@ -235,12 +238,14 @@ def train(train_dloader, valid_dloader, encoder, decoder, discriminator, enc_opt
         # here we train generator to make their generator image looks more real
         dec_optimizer.zero_grad()
         dec_label_inf = torch.full((batch_size,), args.real_label).cuda()
-        output, features_inf = discriminator(fake_inf).view(-1)
+        output, features_inf = discriminator(fake_inf)
+        output = output.view(-1)
         dis_gz_inf_2 = output.mean().item()
         dec_loss_inf = 0.5 * cls_criterion(output, dec_label_inf)
         dec_loss_inf.backward()
         dec_label_gen = torch.full((batch_size,), args.real_label).cuda()
-        output, *_ = discriminator(fake_gen).view(-1)
+        output, *_ = discriminator(fake_gen)
+        output = output.view(-1)
         dis_gz_gen_2 = output.mean().item()
         dec_loss_gen = 0.5 * cls_criterion(output, dec_label_gen)
         dec_loss_gen.backward()
