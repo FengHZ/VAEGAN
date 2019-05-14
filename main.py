@@ -1,3 +1,5 @@
+import os
+from os import path
 import argparse
 from model.discriminator import Discriminator
 from model.decoder import Decoder
@@ -5,18 +7,12 @@ from model.encoder import Encoder
 from lib.utils.avgmeter import AverageMeter
 from lib.dataloader import CelebADataset
 from lib.criterion import ReconstructionCriterion, KLCriterion, ClassificationCriterion
-from torch.utils.data import DataLoader
-import os
-import torch
-from os import path
+
 import time
 import shutil
 from random import sample
-from torch.utils.tensorboard import SummaryWriter
 import pickle
 import ast
-from torch import nn
-from torchvision import utils
 
 
 def arg_as_list(s):
@@ -30,7 +26,7 @@ parser = argparse.ArgumentParser(description='Pytorch Training VAEGAN for CelebA
 parser.add_argument('-bp', '--base_path', default="/data/fhz")
 parser.add_argument('-j', '--workers', default=64, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', default=5, type=int, metavar='N',
+parser.add_argument('--epochs', default=20, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
@@ -48,9 +44,12 @@ parser.add_argument('-is', '--image-size', default=64, type=int, help="The crop 
 # optimizer parameters
 parser.add_argument('--lrd', '--learning-rate-d-d', default=2e-4, type=float,
                     metavar='LR', help='initial learning rate for discriminator and decoder')
-parser.add_argument('--lre', '--learning-rate-encoder', default=1e-8, type=float,
+parser.add_argument('--lre', '--learning-rate-encoder', default=1e-5, type=float,
                     metavar='LR', help='initial learning rate for encoder')
 parser.add_argument('-b1', '--beta1', default=0.5, type=float, metavar='Beta1 In ADAM', help='beta1 for adam')
+parser.add_argument('--lrs', '--learning-rate-scheduler', default=[10, 15], type=arg_as_list,
+                    help="The parameters for the step LR modify, first parameter means step size,\
+                    second means the last epoch")
 # network parameters
 parser.add_argument('-nc', '--num-channel', default=3, type=int, help="The image channel")
 parser.add_argument('-ld', '--latent-dim', default=100, type=int, help="The latent dim for generator")
@@ -73,12 +72,22 @@ parser.add_argument('-fl', '--fake-label', default=0, type=int, help="The label 
 # GPU and data parallel parameters
 parser.add_argument("--gpu", default="0,1", type=str, metavar='GPU plans to use', help='The GPU id plans to use')
 parser.add_argument('-dp', '--data-parallel', action='store_true', help='Use Data Parallel')
+args = parser.parse_args()
+os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+
+# import package about torch
+import torch
+from torch.utils.data import DataLoader
+from torch import nn
+from torch.utils.tensorboard import SummaryWriter
+from torchvision import utils
+from torch.optim.lr_scheduler import MultiStepLR
 
 
-def main():
-    global args
-    args = parser.parse_args()
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+def main(args=args):
+    # global args
+    # args = parser.parse_args()
+    # os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     dataset_base_path = path.join(args.base_path, "dataset", "celeba")
     image_base_path = path.join(dataset_base_path, "img_align_celeba")
     split_dataset_path = path.join(dataset_base_path, "Eval", "list_eval_partition.txt")
@@ -119,6 +128,9 @@ def main():
     dis_optimizer = torch.optim.Adam(discriminator.parameters(), lr=args.lrd, betas=(args.beta1, 0.999))
     dec_optimizer = torch.optim.Adam(decoder.parameters(), lr=args.lrd, betas=(args.beta1, 0.999))
     enc_optimizer = torch.optim.Adam(encoder.parameters(), lr=args.lre, betas=(args.beta1, 0.999))
+    dis_scheduler = MultiStepLR(dis_optimizer, milestones=args.lrs)
+    dec_scheduler = MultiStepLR(dec_optimizer, milestones=args.lrs)
+    enc_scheduler = MultiStepLR(enc_optimizer, milestones=args.lrs)
     writer_log_dir = "{}/VAEGAN/runs/train_time:{}".format(args.base_path, args.train_time)
     # Here we implement the resume part
     if args.resume:
@@ -162,6 +174,11 @@ def main():
     for epoch in range(args.start_epoch, args.epochs):
         train(train_dloader, valid_dloader, encoder, decoder, discriminator, enc_optimizer, dec_optimizer,
               dis_optimizer, recon_criterion, cls_criterion, kl_criterion, writer, epoch)
+        # Here we only change the learning rate of the encoder (for too large at the beginning) and keep
+        # the lr of dec and dis unchanged
+        # dis_scheduler.step(epoch)
+        # dec_scheduler.step(epoch)
+        enc_scheduler.step(epoch)
         # save parameters
         save_checkpoint({
             'epoch': epoch + 1,
@@ -242,7 +259,7 @@ def train(train_dloader, valid_dloader, encoder, decoder, discriminator, enc_opt
         output = output.view(-1)
         dis_gz_inf_2 = output.mean().item()
         dec_loss_inf = 0.5 * cls_criterion(output, dec_label_inf)
-        dec_loss_inf.backward()
+        dec_loss_inf.backward(retain_graph=True)
         dec_label_gen = torch.full((batch_size,), args.real_label).cuda()
         output, *_ = discriminator(fake_gen)
         output = output.view(-1)
@@ -258,7 +275,9 @@ def train(train_dloader, valid_dloader, encoder, decoder, discriminator, enc_opt
         # here we train the encoder with kl divergence
         enc_optimizer.zero_grad()
         kl_loss = kl_criterion(mu, log_sigma, sigma)
-        kl_loss_beta = (epoch + 1) / args.wpe
+        # here we use warm up strategy until the kl loss beta raise 1
+        kl_loss_beta = min(1, (epoch + 1) / args.wpe)
+        # todo: add the mutual information upper bound C_z
         enc_loss = kl_loss * kl_loss_beta + recon_loss
         enc_loss.backward()
         enc_optimizer.step()
@@ -287,37 +306,46 @@ def train(train_dloader, valid_dloader, encoder, decoder, discriminator, enc_opt
                          'Discriminator Fake Loss {disfl.val:.4f} ({disfl.avg:.4f})\t' \
                          'Decoder Fake Loss {decfl.val:.4f} ({decfl.avg:.4f})\t' \
                          'KL Loss {kl.val:.4f} ({kl.avg:.4f})\t' \
-                         'Reconstruction Loss {recl.val:.4f} ({recl.avg:.4f})\t'.format(
-                epoch, i + 1, len(train_dloader), dis_x, dis_gz_inf, dis_gz_inf_2, dis_gz_gen, dis_gz_gen_2,
-                batch_time=batch_time,
-                data_time=data_time, disrl=discriminator_real_loss, disfl=discriminator_fake_loss,
-                decfl=decoder_fake_loss,
-                kl=KL_loss, recl=reconstruction_loss)
+                         'Reconstruction Loss {recl.val:.4f} ({recl.avg:.4f})\t'.format(epoch + 1, i + 1,
+                                                                                        len(train_dloader), dis_x,
+                                                                                        dis_gz_inf, dis_gz_inf_2,
+                                                                                        dis_gz_gen, dis_gz_gen_2,
+                                                                                        batch_time=batch_time,
+                                                                                        data_time=data_time,
+                                                                                        disrl=discriminator_real_loss,
+                                                                                        disfl=discriminator_fake_loss,
+                                                                                        decfl=decoder_fake_loss,
+                                                                                        kl=KL_loss,
+                                                                                        recl=reconstruction_loss)
             print(train_text)
-    writer.add_scalar(tag="Discriminator Real Loss", scalar_value=discriminator_real_loss.avg, global_step=epoch)
-    writer.add_scalar(tag="Discriminator Fake Loss", scalar_value=discriminator_fake_loss.avg, global_step=epoch)
-    writer.add_scalar(tag="Decoder Fake Loss", scalar_value=decoder_fake_loss.avg, global_step=epoch)
-    writer.add_scalar(tag="KL Loss", scalar_value=KL_loss.avg, global_step=epoch)
-    writer.add_scalar(tag="Reconstruction Loss", scalar_value=reconstruction_loss.avg, global_step=epoch)
+    writer.add_scalar(tag="Discriminator Real Loss", scalar_value=discriminator_real_loss.avg, global_step=epoch + 1)
+    writer.add_scalar(tag="Discriminator Fake Loss", scalar_value=discriminator_fake_loss.avg, global_step=epoch + 1)
+    writer.add_scalar(tag="Decoder Fake Loss", scalar_value=decoder_fake_loss.avg, global_step=epoch + 1)
+    writer.add_scalar(tag="KL Loss", scalar_value=KL_loss.avg, global_step=epoch + 1)
+    writer.add_scalar(tag="Reconstruction Loss", scalar_value=reconstruction_loss.avg, global_step=epoch + 1)
     # in the train end, we want to test some real images and fake images from the train dataset and the valid dataset
     # train dataset
     real_image = utils.make_grid(real_image[:64, ...], nrow=8)
-    writer.add_image(tag="Train/Real_Image", img_tensor=(real_image * 0.5) + 0.5, global_step=epoch)
+    writer.add_image(tag="Train/Real_Image", img_tensor=(real_image * 0.5) + 0.5, global_step=epoch + 1)
     fake_gen = utils.make_grid(fake_gen[:64, ...].detach(), nrow=8)
-    writer.add_image(tag="Train/Fake_Image_Gen", img_tensor=(fake_gen * 0.5) + 0.5, global_step=epoch)
+    writer.add_image(tag="Train/Fake_Image_Gen", img_tensor=(fake_gen * 0.5) + 0.5, global_step=epoch + 1)
     fake_inf = utils.make_grid(fake_inf[:64, ...].detach(), nrow=8)
-    writer.add_image(tag="Train/Fake_Image_Inf", img_tensor=(fake_inf * 0.5) + 0.5, global_step=epoch)
+    writer.add_image(tag="Train/Fake_Image_Inf", img_tensor=(fake_inf * 0.5) + 0.5, global_step=epoch + 1)
     # valid dataset
     valid_dloader = enumerate(valid_dloader)
     i, (real_image, index, *_) = valid_dloader.__next__()
+    real_image = real_image.cuda()
     with torch.no_grad():
         mu, log_sigma, sigma, z_sample = encoder(real_image)
-        fake_inf = decoder(z_sample)
-        noise = torch.randn(batch_size, args.latent_dim, 1, 1).cuda()
-        fake_gen = decoder(noise)
-        writer.add_image(tag="Valid/Real_Image", img_tensor=(real_image * 0.5) + 0.5, global_step=epoch)
-        writer.add_image(tag="Valid/Fake_Image_Gen", img_tensor=(fake_gen * 0.5) + 0.5, global_step=epoch)
-        writer.add_image(tag="Valid/Fake_Image_Inf", img_tensor=(fake_inf * 0.5) + 0.5, global_step=epoch)
+    fake_inf = decoder(z_sample)
+    noise = torch.randn(batch_size, args.latent_dim, 1, 1).cuda()
+    fake_gen = decoder(noise)
+    real_image = utils.make_grid(real_image[:64, ...], nrow=8)
+    fake_inf = utils.make_grid(fake_inf[:64, ...], nrow=8)
+    fake_gen = utils.make_grid(fake_gen[:64, ...], nrow=8)
+    writer.add_image(tag="Valid/Real_Image", img_tensor=(real_image * 0.5) + 0.5, global_step=epoch + 1)
+    writer.add_image(tag="Valid/Fake_Image_Gen", img_tensor=(fake_gen * 0.5) + 0.5, global_step=epoch + 1)
+    writer.add_image(tag="Valid/Fake_Image_Inf", img_tensor=(fake_inf * 0.5) + 0.5, global_step=epoch + 1)
 
 
 def save_checkpoint(state, filename='checkpoint.pth.tar'):
