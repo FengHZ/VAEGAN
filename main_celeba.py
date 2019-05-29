@@ -7,7 +7,6 @@ from model.encoder import Encoder
 from lib.utils.avgmeter import AverageMeter
 from lib.dataloader import CelebADataset
 from lib.criterion import ReconstructionCriterion, KLCriterion, ClassificationCriterion
-
 import time
 import shutil
 from random import sample
