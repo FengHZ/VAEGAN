@@ -11,7 +11,7 @@ class ReconstructionCriterion(nn.Module):
     def forward(self, original, reconstruct):
         batch_size = original.size(0)
         reconstruct_loss = F.mse_loss(reconstruct, original, reduction="sum")
-        reconstruct_loss = reconstruct_loss / (self.sigma ** 2 * batch_size)
+        reconstruct_loss = 0.5*reconstruct_loss / (self.sigma ** 2 * batch_size)
         return reconstruct_loss
 
 
@@ -24,7 +24,7 @@ class KLCriterion(nn.Module):
         z_mean_sq = z_mean * z_mean
         z_sigma_sq = z_sigma * z_sigma
         z_log_sigma_sq = 2 * z_log_sigma
-        kl_loss = torch.sum(z_mean_sq + z_sigma_sq - z_log_sigma_sq - 1) / batch_size
+        kl_loss = 0.5*torch.sum(z_mean_sq + z_sigma_sq - z_log_sigma_sq - 1) / batch_size
         return kl_loss
 
 
@@ -65,14 +65,14 @@ class VAECriterion(nn.Module):
         batch_size = x.size(0)
         # calculate reconstruct loss, sum in instance, mean in batch
         reconstruct_loss = F.mse_loss(x_reconstructed, x, reduction="sum")
-        reconstruct_loss = reconstruct_loss / (self.x_sigma ** 2 * batch_size)
+        reconstruct_loss = 0.5*reconstruct_loss / (self.x_sigma ** 2 * batch_size)
         # reconstruct_loss = F.mse_loss(x_reconstructed, x)
         # reconstruct_loss = reconstruct_loss / self.x_sigma ** 2
         # calculate latent space KL divergence
         z_mean_sq = z_mean * z_mean
         z_sigma_sq = z_sigma * z_sigma
         z_log_sigma_sq = 2 * z_log_sigma
-        kl_loss = torch.sum(z_mean_sq + z_sigma_sq - z_log_sigma_sq - 1) / batch_size
+        kl_loss = 0.5*torch.sum(z_mean_sq + z_sigma_sq - z_log_sigma_sq - 1) / batch_size
         # kl_loss = 0.5 * torch.mean(z_mean_sq + z_sigma_sq - z_log_sigma_sq - 1)
         # notice here we duplicate the 0.5 by each part
         return reconstruct_loss, kl_loss
